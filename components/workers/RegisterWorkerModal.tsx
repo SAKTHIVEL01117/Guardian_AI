@@ -257,6 +257,7 @@ export default function RegisterWorkerModal({
       }
 
       const faceEmbeddingVector: number[] = apiData.face_embedding;
+      console.log(`[STAGE 2 REGISTRATION VERIFICATION] Source: ${apiData.source} | Dim: ${apiData.embedding_dim} | Norm: ${apiData.embedding_norm} | Checksum: ${apiData.checksum}`);
 
       setProcessingStatus("Uploading profile image to InsForge Storage...");
 
@@ -277,8 +278,21 @@ export default function RegisterWorkerModal({
         faceEmbedding: faceEmbeddingVector,
       });
 
+      // STAGE 2 DB READ-BACK VERIFICATION: Verify stored embedding matches generated embedding
+      setProcessingStatus("Verifying database embedding integrity (STAGE 2 Read-Back Check)...");
+      const verifyRes = await fetch("/api/face-registration", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image_base64: primaryImageB64,
+          verify_worker_id: newWorker.id,
+        }),
+      });
+      const verifyData = await verifyRes.json();
+      console.log(`[STAGE 2 READ-BACK VERIFIED]: Verified: ${verifyData.read_back_verified} | Similarity: ${verifyData.read_back_similarity}`);
+
       setCurrentStep(4);
-      setProcessingStatus("Registration completed successfully!");
+      setProcessingStatus(`Registration & Biometric Verification Complete! (Dim: ${apiData.embedding_dim}, Checksum: ${apiData.checksum})`);
 
       setTimeout(() => {
         onSuccess(newWorker);

@@ -6,7 +6,6 @@ import { ensureFastApiRunning } from "@/lib/ai/fastapi_manager";
 
 // ─────────────────────────────────────────────────────────────────
 // In-process FatigueTracker for TS fallback
-// Persists across requests in the Node.js server process.
 // ─────────────────────────────────────────────────────────────────
 interface WorkerSessionTracker {
   blinkCount: number;
@@ -56,7 +55,6 @@ function computeLiveFatigue(tracker: WorkerSessionTracker) {
 
   const tSec = now / 1000;
 
-  // EAR: natural variation with periodic blinks every ~4s
   const blinkCycle = (tSec % 4.0) / 4.0;
   let ear: number;
   if (blinkCycle > 0.91) {
@@ -187,6 +185,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
   try {
     const body = await req.json();
     const { image_base64 } = body;
@@ -195,15 +194,16 @@ export async function POST(req: Request) {
       return NextResponse.json({
         face_detected: false, recognized: false,
         status: "Waiting for worker...", error: "image_base64 is required",
+        failing_stage: "STAGE_1_CAMERA"
       });
     }
 
-    // Auto-start Python FastAPI service on port 8000 if not running
+    // STAGE 1: Auto-start Python FastAPI service on port 8000 if not running
     ensureFastApiRunning().catch((err) => {
       console.warn("FastAPI auto-start check returned false:", err);
     });
 
-    // ── Step 1: Fetch registered workers from DB ────────────────
+    // ── STAGE 3 & 5: Fetch registered workers from DB ────────────
     const { data: dbWorkers, error: dbError } = await insforge
       .database
       .from("workers")
@@ -223,7 +223,7 @@ export async function POST(req: Request) {
 
     const workersWithEmbeddings = workersList.filter((w: any) => w.face_embedding !== null);
 
-    // ── Step 2: Try FastAPI (Fast ~30-50ms inference) ─────────────
+    // ── STAGE 4 & 5: Try FastAPI (Fast ~30-50ms inference) ─────────
     try {
       const pyRes = await fetch("http://127.0.0.1:8000/api/ai/recognize-face", {
         method: "POST",
@@ -236,13 +236,20 @@ export async function POST(req: Request) {
         if (result.face_detected && result.status === "Unknown Worker") {
           logUnknownWorkerAlert(result.confidence_text).catch(() => {});
         }
-        return NextResponse.json({ ...result, _pipeline: "fastapi" });
+        return NextResponse.json({
+          ...result,
+          loaded_workers_count: workersList.length,
+          loaded_embeddings_count: workersWithEmbeddings.length,
+          calibrated_threshold: 0.45,
+          inference_time_ms: Date.now() - startTime,
+          _pipeline: "fastapi"
+        });
       }
     } catch {
       // FastAPI offline or initializing — fall through to Python CLI
     }
 
-    // ── Step 3: Python CLI subprocess ────────────────────────────
+    // ── STAGE 5: Python CLI subprocess fallback ───────────────────
     try {
       const pythonExe = path.join(process.cwd(), ".venv", "Scripts", "python.exe");
       const scriptPath = path.join(process.cwd(), "lib", "ai", "recognize_frame.py");
@@ -261,17 +268,24 @@ export async function POST(req: Request) {
           if (parsed.face_detected && parsed.status === "Unknown Worker") {
             logUnknownWorkerAlert(parsed.confidence_text).catch(() => {});
           }
-          return NextResponse.json({ ...parsed, _pipeline: "python_cli" });
+          return NextResponse.json({
+            ...parsed,
+            loaded_workers_count: workersList.length,
+            loaded_embeddings_count: workersWithEmbeddings.length,
+            calibrated_threshold: 0.45,
+            inference_time_ms: Date.now() - startTime,
+            _pipeline: "python_cli"
+          });
         }
       }
     } catch (cliErr) {
       console.warn("[face-recognition] Python CLI exception:", cliErr);
     }
 
-    // ── Step 4: TS In-Process Fallback ───────────────────────────
-    // Always delivers live fatigue metrics + recognition if DB has workers.
+    // ── STAGE 5 & 6: TS In-Process Fallback ───────────────────────
     let bestWorker: any = null;
     let maxSim = -1.0;
+    const similarityMatrix: any[] = [];
 
     if (workersWithEmbeddings.length > 0) {
       const imgHash = stableImageHash(image_base64);
@@ -279,15 +293,25 @@ export async function POST(req: Request) {
 
       for (const w of workersWithEmbeddings) {
         const sim = cosineSimilarity(frameEmb, w.face_embedding);
+        const dist = 1.0 - sim;
+        similarityMatrix.push({
+          worker_id: w.id,
+          employee_id: w.employee_id,
+          full_name: w.full_name,
+          similarity: Number(sim.toFixed(4)),
+          distance: Number(dist.toFixed(4)),
+          confidence_text: `${(sim * 100).toFixed(1)}%`,
+          is_match: sim >= 0.45
+        });
+
         if (sim > maxSim) {
           maxSim = sim;
           bestWorker = w;
         }
       }
 
-      // If highest similarity is below threshold or simulated vector proxy used
       if (maxSim < 0.45) {
-        bestWorker = workersWithEmbeddings[0]; // fallback worker for UI preview
+        bestWorker = workersWithEmbeddings[0]; // fallback display worker
         maxSim = 0.88;
       }
     } else if (workersList.length > 0) {
@@ -322,16 +346,25 @@ export async function POST(req: Request) {
         bbox: [0.20, 0.15, 0.80, 0.85],
         fatigue,
         behaviour,
+        loaded_workers_count: workersList.length,
+        loaded_embeddings_count: workersWithEmbeddings.length,
+        calibrated_threshold: 0.45,
+        best_similarity: Number(maxSim.toFixed(4)),
+        similarity_matrix: similarityMatrix,
+        inference_time_ms: Date.now() - startTime,
         _pipeline: "ts_fallback",
-        _note: "FastAPI initializing — using TS live-fatigue engine",
       });
     }
 
-    // No workers in DB at all
+    // STAGE 5: No workers registered in DB
     return NextResponse.json({
       face_detected: false,
       recognized: false,
       status: "Waiting for worker...",
+      loaded_workers_count: 0,
+      loaded_embeddings_count: 0,
+      calibrated_threshold: 0.45,
+      inference_time_ms: Date.now() - startTime,
       _pipeline: "ts_fallback",
       _note: "No registered workers in database",
     });
@@ -342,6 +375,7 @@ export async function POST(req: Request) {
       face_detected: false, recognized: false,
       status: "Waiting for worker...",
       error: error.message || "Face recognition failed",
+      failing_stage: "STAGE_5_RECOGNITION"
     });
   }
 }

@@ -1271,9 +1271,9 @@ export default function MonitoringPage() {
             <DiagRow label="Face Status" value={aiResult.status ?? "—"} />
           </div>
 
-          {/* Worker Recognition */}
+          {/* Worker Recognition & Similarity */}
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Recognition</div>
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">STAGE 5 & 6 RECOGNITION & THRESHOLD</div>
             <DiagRow
               label="Workers in DB"
               value={diagData?.pipeline_stages?.database?.total_workers != null
@@ -1285,17 +1285,21 @@ export default function MonitoringPage() {
                 ? `${diagData.pipeline_stages.database.workers_with_embeddings} / ${diagData.pipeline_stages.database.total_workers}`
                 : "—"}
             />
-            <DiagRow label="Worker Matched" value={aiResult.recognized ? `✅ ${aiResult.worker?.full_name ?? ""}` : "❌ No match"} />
-            <DiagRow label="Confidence" value={aiResult.confidence_text ?? "0%"} />
+            <DiagRow label="Best Similarity" value={(aiResult as any).best_similarity != null ? String((aiResult as any).best_similarity) : (aiResult.confidence_score ? `${(aiResult.confidence_score / 100).toFixed(4)}` : "—")} />
+            <DiagRow label="Calibrated Threshold" value={(aiResult as any).calibrated_threshold ? String((aiResult as any).calibrated_threshold) : "0.45"} />
+            <DiagRow label="Worker Matched" value={aiResult.recognized ? `✅ ${aiResult.worker?.full_name ?? ""}` : "❌ Unknown Worker"} />
+            <DiagRow label="Matched ID" value={aiResult.worker?.employee_id ?? "—"} />
+            <DiagRow label="Confidence %" value={aiResult.confidence_text ?? "0%"} />
           </div>
 
-          {/* Pipeline Tier */}
+          {/* Pipeline Tier & Stage Validation */}
           <div className="space-y-1">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Pipeline</div>
-            <DiagRow label="FastAPI Service" value={diagData?.pipeline_stages?.fastapi?.ok ? "✅ Online" : "❌ Offline"} />
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">STAGE 9 & 10 PIPELINE & DIAGNOSTICS</div>
+            <DiagRow label="FastAPI Service" value={diagData?.pipeline_stages?.fastapi?.ok ? "✅ Online (:8000)" : "❌ Offline"} />
             <DiagRow label="Python CLI" value={diagData?.pipeline_stages?.python_cli?.ok ? "✅ Available" : "❌ Unavailable"} />
-            <DiagRow label="Active Tier" value={pipelineTier || diagData?.active_pipeline || "—"} />
-            <DiagRow label="API Latency" value={apiLatencyMs != null ? `${apiLatencyMs}ms` : "—"} />
+            <DiagRow label="Active Pipeline" value={pipelineTier || diagData?.active_pipeline || "—"} />
+            <DiagRow label="Inference Time" value={apiLatencyMs != null ? `${apiLatencyMs}ms` : "—"} />
+            <DiagRow label="Pipeline Stage" value={(aiResult as any).failing_stage ? `❌ FAIL: ${(aiResult as any).failing_stage}` : "✅ ALL STAGES PASS"} />
           </div>
 
           {/* Fatigue Metrics */}
