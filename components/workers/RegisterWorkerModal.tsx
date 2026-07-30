@@ -66,6 +66,7 @@ export default function RegisterWorkerModal({
   // Camera & Stream State
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -87,12 +88,16 @@ export default function RegisterWorkerModal({
 
   // Stop camera stream utility
   const stopCameraStream = useCallback(() => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setStream(null);
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
     setCameraActive(false);
-  }, [stream]);
+  }, []);
 
   // Cleanup on unmount or close
   useEffect(() => {
@@ -101,28 +106,54 @@ export default function RegisterWorkerModal({
     };
   }, [stopCameraStream]);
 
-  // Start Laptop Webcam
+  // Start Laptop Webcam with flexible constraints
   const startCamera = async () => {
+    if (streamRef.current && streamRef.current.active) {
+      setCameraActive(true);
+      return;
+    }
     setCameraError(null);
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: "user",
-        },
-        audio: false,
-      });
+      let mediaStream: MediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: "user",
+          },
+          audio: false,
+        });
+      } catch (e) {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+      streamRef.current = mediaStream;
       setStream(mediaStream);
       setCameraActive(true);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
     } catch (err: any) {
       console.error("Camera access error:", err);
       setCameraError("Unable to access laptop webcam. Please check camera permissions in your browser.");
+      setCameraActive(false);
     }
   };
+
+  // Sync MediaStream to videoRef element when Step 2 mounts or stream updates
+  useEffect(() => {
+    const activeStream = streamRef.current || stream;
+    if (currentStep === 2 && videoRef.current && activeStream) {
+      const video = videoRef.current;
+      if (video.srcObject !== activeStream) {
+        video.srcObject = activeStream;
+      }
+      video.play().catch((err) => {
+        console.warn("Camera play warning:", err);
+      });
+      setCameraActive(true);
+    }
+  }, [currentStep, stream]);
 
   // Move to Step 2: Start Guided Enrollment
   const handleStartFaceRegistration = async (e: React.FormEvent) => {

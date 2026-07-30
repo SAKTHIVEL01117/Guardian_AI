@@ -38,7 +38,7 @@ class BehaviourTracker:
             }
         ]
 
-    def update(self, face_detected: boolean = True, fatigue_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def update(self, face_detected: bool = True, fatigue_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         now = time.time()
         dt = max(0.1, min(2.0, now - self.last_frame_time))
         self.last_frame_time = now

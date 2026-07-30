@@ -241,8 +241,9 @@ export async function registerNewWorker(input: CreateWorkerInput): Promise<Worke
     .select("*");
 
   if (error) {
-    console.error("InsForge worker insert error:", error);
-    throw new Error(error.message || "Failed to register worker in database.");
+    const errorMsg = (error as any).message || (error as any).details || (error as any).hint || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+    console.error("InsForge worker insert error:", errorMsg, error);
+    throw new Error(errorMsg || "Failed to register worker in database.");
   }
 
   if (data && data.length > 0) {

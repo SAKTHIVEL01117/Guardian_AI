@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { spawnSync } from "child_process";
 import path from "path";
+import { ensureFastApiRunning } from "@/lib/ai/fastapi_manager";
 
 export async function POST(req: Request) {
   try {
@@ -14,6 +15,11 @@ export async function POST(req: Request) {
       );
     }
 
+    // Ensure Python FastAPI service is running on port 8000
+    await ensureFastApiRunning().catch((err) => {
+      console.warn("FastAPI auto-start check returned false:", err);
+    });
+
     // 1. Try calling running Python FastAPI service first (port 8000)
     try {
       const response = await fetch("http://127.0.0.1:8000/api/ai/face-embedding", {
@@ -23,6 +29,7 @@ export async function POST(req: Request) {
           image_base64,
           additional_frames: additional_frames || [],
         }),
+        signal: AbortSignal.timeout(8000),
       });
 
       if (response.ok) {
@@ -38,7 +45,7 @@ export async function POST(req: Request) {
         });
       }
     } catch (fastApiErr) {
-      console.warn("FastAPI InsightFace service not responding on port 8000, attempting direct python execution fallback:", fastApiErr);
+      console.warn("FastAPI InsightFace service on port 8000 not responding, trying python CLI fallback:", fastApiErr);
     }
 
     // 2. Direct python script fallback using spawnSync
@@ -52,6 +59,7 @@ export async function POST(req: Request) {
         input: payloadString,
         encoding: "utf-8",
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 12000,
       });
 
       if (proc.stdout) {
@@ -80,7 +88,7 @@ export async function POST(req: Request) {
       det_score: 0.96,
       quality: { brightness: 120, blur_score: 110, is_lighting_good: true, is_sharp: true },
       source: "buffalo_l_simulated_fallback",
-      note: "Biometric embedding generated successfully for database storage.",
+      note: "Biometric embedding generated for worker registration.",
     });
   } catch (error: any) {
     console.error("Error in face registration API:", error);

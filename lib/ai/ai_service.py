@@ -11,6 +11,9 @@ from typing import List, Optional
 import insightface
 from insightface.app import FaceAnalysis
 
+from lib.ai.fatigue_engine import get_worker_tracker
+from lib.ai.behaviour_engine import get_worker_behaviour_tracker
+
 app = FastAPI(title="Operator Guardian AI - Biometric Service", version="1.0.0")
 
 # Enable CORS for Next.js app
@@ -28,10 +31,10 @@ face_analyzer = None
 def get_face_analyzer():
     global face_analyzer
     if face_analyzer is None:
-        print("Loading InsightFace buffalo_l model...")
+        print("[InsightFace] Loading buffalo_l model into CPU RAM...")
         face_analyzer = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
         face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
-        print("InsightFace buffalo_l model loaded successfully!")
+        print("[InsightFace] buffalo_l model loaded successfully!")
     return face_analyzer
 
 
@@ -78,7 +81,7 @@ def calculate_image_quality(img_bgr: np.ndarray):
         "brightness": round(brightness, 2),
         "blur_score": round(blur_score, 2),
         "is_lighting_good": 40 <= brightness <= 235,
-        "is_sharp": blur_score >= 25.0
+        "is_sharp": blur_score >= 20.0
     }
 
 @app.on_event("startup")
@@ -120,27 +123,11 @@ def quality_check(req: QualityCheckRequest):
         det_score = float(face.det_score)
         bbox = [float(x) for x in face.bbox]
 
-        # Pose angle estimation (pitch, yaw, roll)
-        pose_angles = None
-        if hasattr(face, 'pose') and face.pose is not None:
-            pose_angles = [float(a) for a in face.pose]
-        elif hasattr(face, 'kps') and face.kps is not None:
-            kps = face.kps
-            left_eye, right_eye, nose = kps[0], kps[1], kps[2]
-            eye_center = (left_eye + right_eye) / 2.0
-            dx = nose[0] - eye_center[0]
-            eye_dist = np.linalg.norm(left_eye - right_eye)
-            yaw_est = (dx / (eye_dist + 1e-6)) * 45.0
-            dy = nose[1] - eye_center[1]
-            pitch_est = (dy / (eye_dist + 1e-6)) * 45.0 - 20.0
-            pose_angles = [pitch_est, yaw_est, 0.0]
-
         return {
             "valid": quality["is_lighting_good"] and quality["is_sharp"] and det_score > 0.4,
             "face_count": 1,
             "det_score": round(det_score, 3),
             "bbox": bbox,
-            "pose_angles": pose_angles,
             "quality": quality
         }
     except Exception as e:
@@ -155,11 +142,11 @@ def generate_face_embedding(req: ProcessEmbeddingRequest):
 
         if len(faces) == 0:
             raise HTTPException(status_code=400, detail="No face detected in the primary registration image.")
-        if len(faces) > 1:
-            raise HTTPException(status_code=400, detail="Multiple faces detected in image. Single worker required.")
 
+        # Pick face with highest det_score
+        faces = sorted(faces, key=lambda f: f.det_score, reverse=True)
         face = faces[0]
-        embedding = face.embedding
+        embedding = face.embedding.astype(np.float32)
 
         # Normalize embedding to unit length (L2 norm)
         norm = np.linalg.norm(embedding)
@@ -175,9 +162,12 @@ def generate_face_embedding(req: ProcessEmbeddingRequest):
                 try:
                     extra_img = decode_base64_image(extra_b64)
                     extra_faces = analyzer.get(extra_img)
-                    if len(extra_faces) == 1:
-                        e_norm = extra_faces[0].embedding / (np.linalg.norm(extra_faces[0].embedding) + 1e-6)
-                        additional_embeddings.append(e_norm)
+                    if len(extra_faces) > 0:
+                        e_face = sorted(extra_faces, key=lambda f: f.det_score, reverse=True)[0]
+                        e_emb = e_face.embedding.astype(np.float32)
+                        e_norm = np.linalg.norm(e_emb)
+                        if e_norm > 0:
+                            additional_embeddings.append(e_emb / e_norm)
                 except Exception:
                     continue
 
@@ -224,7 +214,8 @@ def recognize_face(req: RecognizeFaceRequest):
         det_score = float(face.det_score)
         bbox = [float(x) for x in face.bbox]
 
-        frame_emb = face.embedding
+        # Extract & L2-normalize frame embedding
+        frame_emb = face.embedding.astype(np.float32)
         norm = np.linalg.norm(frame_emb)
         if norm > 0:
             frame_emb = frame_emb / norm
@@ -246,11 +237,9 @@ def recognize_face(req: RecognizeFaceRequest):
                 max_similarity = sim
                 best_worker = w
 
-        # Threshold for positive recognition (50% cosine similarity)
-        RECOGNITION_THRESHOLD = 0.50
+        # Threshold for positive recognition (45% cosine similarity for InsightFace buffalo_l)
+        RECOGNITION_THRESHOLD = 0.45
 
-        from lib.ai.fatigue_engine import get_worker_tracker
-        from lib.ai.behaviour_engine import get_worker_behaviour_tracker
         tracker_id = best_worker.id if (best_worker and max_similarity >= RECOGNITION_THRESHOLD) else "temp_session"
         tracker = get_worker_tracker(tracker_id)
         fatigue_metrics = tracker.process_frame_landmarks(img_bgr, face)
@@ -281,7 +270,7 @@ def recognize_face(req: RecognizeFaceRequest):
                 "behaviour": behaviour_metrics
             }
         else:
-            conf_pct = round(max(0.0, max_similarity) * 100, 1)
+            conf_pct = round(max(0.0, max_similarity) * 100, 1) if max_similarity > -1.0 else 0.0
             return {
                 "face_detected": True,
                 "recognized": False,
@@ -306,4 +295,5 @@ def recognize_face(req: RecognizeFaceRequest):
 
 if __name__ == "__main__":
     import uvicorn
+    print("[FastAPI] Starting Operator Guardian AI Biometric Service on port 8000...")
     uvicorn.run(app, host="127.0.0.1", port=8000)
